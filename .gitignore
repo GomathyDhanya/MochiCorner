@@ -1,0 +1,18 @@
+# macOS Finder metadata
+.DS_Store
+
+# Swift Package Manager build artifacts
+.build/
+
+# Xcode user and build files
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# App-local development data and secrets
+*.key
+*.pem
+.env
+.env.*
+!*.env.example
