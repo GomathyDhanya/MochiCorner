@@ -7,6 +7,25 @@ final class ActivityRepository: ObservableObject {
     @Published private(set) var goals: [UsageGoal] = []
     @Published private(set) var chronicles: [DailyChronicle] = []
     private let directory: URL
+    @Published private(set) var pages: [String: DaybookPage] = [:]
+    @Published private(set) var pageError: String?
+    private var pagesReadable = true
+    private var pagesURL: URL { directory.appendingPathComponent("daybook.json") }
+
+    func savePage(_ page: DaybookPage, for key: String) -> Bool {
+        guard pagesReadable else { return false }
+        var next = pages
+        next[key] = page
+        do {
+            try JSONEncoder().encode(next).write(to: pagesURL, options: .atomic)
+            pages = next
+            pageError = nil
+            return true
+        } catch {
+            pageError = "Couldn’t save this page. Check available disk space and try again."
+            return false
+        }
+    }
     private var sessionsURL: URL { directory.appendingPathComponent("sessions.json") }
     private var stateURL: URL { directory.appendingPathComponent("state.json") }
     private struct State: Codable { var apps: [TrackedApp]; var goals: [UsageGoal]; var chronicles: [DailyChronicle] }
@@ -29,8 +48,20 @@ final class ActivityRepository: ObservableObject {
     }
     func setGoals(_ values: [UsageGoal]) { goals = values; saveState() }
     func addChronicle(_ value: DailyChronicle) { chronicles.insert(value, at: 0); saveState() }
-    func deleteAllHistory() { sessions = []; chronicles = []; saveSessions(); saveState() }
+    func deleteAllHistory() {
+        do {
+            if FileManager.default.fileExists(atPath: pagesURL.path) { try FileManager.default.removeItem(at: pagesURL) }
+            pages = [:]
+            pagesReadable = true
+            pageError = nil
+        } catch { pageError = "Couldn’t delete the daybook." }
+        sessions = []; chronicles = []; saveSessions(); saveState()
+    }
     private func load() {
+        if FileManager.default.fileExists(atPath: pagesURL.path) {
+            do { pages = try JSONDecoder().decode([String: DaybookPage].self, from: Data(contentsOf: pagesURL)) }
+            catch { pagesReadable = false; pageError = "The saved daybook could not be read. Its file has been preserved." }
+        }
         let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601
         sessions = (try? d.decode([UsageSession].self, from: Data(contentsOf: sessionsURL))) ?? []
         // Old builds stored an open session with no heartbeat. Never let a

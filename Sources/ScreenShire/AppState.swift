@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
-    let repository = ActivityRepository()
+    let repository: ActivityRepository
     @Published var trackingPaused: Bool { didSet { UserDefaults.standard.set(trackingPaused, forKey: "trackingPaused"); trackingPaused ? monitor.stop() : monitor.start() } }
     @Published var widgetVisible: Bool { didSet { UserDefaults.standard.set(widgetVisible, forKey: "widgetVisible"); applyWidgetPreferences?() } }
     @Published var widgetScale: Double { didSet { UserDefaults.standard.set(widgetScale, forKey: "widgetScale"); applyWidgetPreferences?() } }
@@ -24,7 +24,8 @@ final class AppState: ObservableObject {
     var applyWidgetPreferences: (() -> Void)?
     private lazy var tracker = UsageSessionTracker(repository: repository)
     private lazy var monitor = AppActivityMonitor(tracker: tracker)
-    init() {
+    init(repository: ActivityRepository = ActivityRepository()) {
+        self.repository = repository
         let defaults = UserDefaults.standard
         trackingPaused = defaults.bool(forKey: "trackingPaused")
         widgetVisible = defaults.object(forKey: "widgetVisible") as? Bool ?? true
@@ -46,14 +47,28 @@ final class AppState: ObservableObject {
     var currentCategory: ActivityCategory { trackingPaused ? .idle : tracker.current.map { repository.appMappings[$0.bundleIdentifier]?.category ?? $0.category } ?? .uncategorized }
     var activeAppName: String { trackingPaused ? "Tracking paused" : (tracker.current?.appName ?? "Waiting for an active app") }
     var trackingExplanation: String { tracker.lastTransition }
-    func start() { monitor.start(); applyWidgetPreferences?(); evaluateGoals(); Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in Task { @MainActor in self?.evaluateGoals() } } }
-    func stop() { monitor.stop() }
+    private var goalTimer: Timer?
+    func start() {
+        guard goalTimer == nil else { return }
+        if !trackingPaused { monitor.start() }
+        applyWidgetPreferences?()
+        evaluateGoals()
+        goalTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.evaluateGoals() }
+        }
+    }
+    func stop() {
+        goalTimer?.invalidate()
+        goalTimer = nil
+        monitor.stop()
+    }
     func resetDemo() {
         let now = Date(); let cal = Calendar.current
         let examples: [(ActivityCategory, String, String, Int, Int)] = [(.code, "com.microsoft.VSCode", "Visual Studio Code", 205, 0), (.social, "com.apple.MobileSMS", "Messages", 75, 220), (.study, "com.apple.Preview", "Preview", 45, 310), (.create, "com.figma.Desktop", "Figma", 55, 380)]
         for (cat, id, name, minutes, offset) in examples { let end = cal.date(byAdding: .minute, value: -offset, to: now)!; let start = cal.date(byAdding: .minute, value: -minutes, to: end)!; repository.append(UsageSession(id: UUID(), bundleIdentifier: id, appName: name, category: cat, startedAt: start, endedAt: end)) }
     }
     func generateChronicle() async {
+        guard !isGeneratingStory else { return }
         lastStoryError = nil
         storyStatus = nil
         isGeneratingStory = true
@@ -103,7 +118,7 @@ struct ScreenShireApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         WindowGroup("ScreenShire") { DashboardView().environmentObject(state).onAppear { state.start(); appDelegate.state = state } }
-            .defaultSize(width: 820, height: 620)
+            .defaultSize(width: 1040, height: 720)
             .commands { CommandGroup(after: .appInfo) { Button("Show Cat Widget") { appDelegate.showWidget() }.keyboardShortcut("w", modifiers: [.command, .shift]) } }
     }
 }
@@ -112,7 +127,10 @@ struct ScreenShireApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var state: AppState? { didSet { if let state { widget = FloatingWidgetController(state: state) } } }
     private var widget: FloatingWidgetController?
-    func applicationDidFinishLaunching(_ notification: Notification) { }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
+    }
     func applicationWillTerminate(_ notification: Notification) { state?.stop() }
     func showWidget() { state?.widgetVisible = true; widget?.show() }
 }

@@ -40,19 +40,33 @@ struct GeminiStoryService {
         let prompt = """
         Write a warm, concise fictional cat chronicle about Mochi's day.
         Use only the supplied aggregate facts for activity details. You may mention exact numeric minutes only when they appear in Facts; never invent or estimate a statistic. Be gentle about exceeded goals.
+        For suggestedStep, propose one concrete offline action for tomorrow in at most twelve words, informed by category totals or a chosen limit. Never infer mood or focus from app time.
         Return ONLY a valid JSON object, with exactly these non-empty string properties:
-        {"title":"short chapter title","story":"2–4 sentence story","memorySummary":"one short continuity note"}
+        {"title":"short chapter title","story":"2–4 sentence story","memorySummary":"one short continuity note","suggestedStep":"one optional offline step"}
         Do not use Markdown, code fences, or extra keys.
         Facts: \(facts)
         """
-        let body: [String: Any] = ["contents": [["parts": [["text": prompt]]]], "generationConfig": ["responseMimeType": "application/json"]]
+        let fields = ["title", "story", "memorySummary", "suggestedStep"]
+        let schema: [String: Any] = [
+            "type": "OBJECT",
+            "properties": Dictionary(uniqueKeysWithValues: fields.map { ($0, ["type": "STRING"]) }),
+            "required": fields
+        ]
+        let body: [String: Any] = [
+            "contents": [["parts": [["text": prompt]]]],
+            "generationConfig": ["responseMimeType": "application/json", "responseSchema": schema]
+        ]
         // Use a specific available lightweight model instead of the overloaded
         // rolling `gemini-flash-latest` alias.
         var request = URLRequest(url: URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")!); request.httpMethod = "POST"; request.timeoutInterval = 20; request.setValue(key, forHTTPHeaderField: "x-goog-api-key"); request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await requestWithRetry(request)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else { throw StoryError.serviceBusy }
+        guard let http = response as? HTTPURLResponse else { throw StoryError.serviceBusy }
+        if [400, 401, 403].contains(http.statusCode) {
+            throw NSError(domain: "ScreenShire.Gemini", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Gemini rejected the request. Check your API key and model access in Google AI Studio."])
+        }
+        guard 200..<300 ~= http.statusCode else { throw StoryError.serviceBusy }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any], let candidates = json["candidates"] as? [[String: Any]], let content = candidates.first?["content"] as? [String: Any], let parts = content["parts"] as? [[String: Any]], let output = parts.first?["text"] as? String, let chapter = decodeChapter(output) else { throw StoryError.malformedResponse }
-        return DailyChronicle(id: UUID(), date: Date(), title: chapter.title, story: chapter.story, memorySummary: chapter.memorySummary)
+        return DailyChronicle(id: UUID(), date: Date(), title: chapter.title, story: chapter.story, memorySummary: chapter.memorySummary, suggestedStep: chapter.suggestedStep)
     }
     private func requestWithRetry(_ request: URLRequest) async throws -> (Data, URLResponse) {
         for attempt in 0..<3 {
@@ -66,16 +80,25 @@ struct GeminiStoryService {
         }
         throw StoryError.serviceBusy
     }
-    private func decodeChapter(_ output: String) -> GeneratedChapter? {
+    func decodeChapter(_ output: String) -> GeneratedChapter? {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         let unfenced = trimmed.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         let jsonText: String
         if let first = unfenced.firstIndex(of: "{"), let last = unfenced.lastIndex(of: "}") { jsonText = String(unfenced[first...last]) } else { jsonText = unfenced }
         return try? JSONDecoder().decode(GeneratedChapter.self, from: Data(jsonText.utf8))
     }
-    private struct GeneratedChapter: Decodable {
+    struct GeneratedChapter: Decodable {
         let title: String; let story: String; let memorySummary: String
-        enum CodingKeys: String, CodingKey { case title, story, memorySummary, memory_summary }
-        init(from decoder: Decoder) throws { let values = try decoder.container(keyedBy: CodingKeys.self); title = try values.decode(String.self, forKey: .title); story = try values.decode(String.self, forKey: .story); memorySummary = try values.decodeIfPresent(String.self, forKey: .memorySummary) ?? values.decode(String.self, forKey: .memory_summary) }
+        let suggestedStep: String
+        enum CodingKeys: String, CodingKey { case title, story, memorySummary, memory_summary, suggestedStep }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            title = try values.decode(String.self, forKey: .title)
+            story = try values.decode(String.self, forKey: .story)
+            memorySummary = try values.decode(String.self, forKey: .memorySummary)
+            suggestedStep = try values.decode(String.self, forKey: .suggestedStep).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !story.isEmpty, !memorySummary.isEmpty, !suggestedStep.isEmpty,
+                  suggestedStep.count <= 200 else { throw StoryError.malformedResponse }
+        }
     }
 }

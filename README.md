@@ -13,6 +13,9 @@ ScreenShire follows foreground app use, lets you see the shape of your time, and
 - Provides a Today dashboard, a calendar-based Memory Garden, and local activity history.
 - Adds soft category limits with a single friendly notification—not punitive alerts.
 - Creates optional daily Mochi chronicles from aggregate category totals.
+- Opens on My daybook, where you can plan small steps for any date and keep a private journal.
+- Grows a pocket garden when you complete steps, record a screen-free break, or write a reflection.
+- Lets you add an optional Gemini-suggested offline step to tomorrow’s daybook from a daily chronicle. Journal entries and plan text stay on your Mac.
 
 ## Privacy
 

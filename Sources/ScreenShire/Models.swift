@@ -38,6 +38,7 @@ struct DailyChronicle: Codable, Identifiable {
     var title: String
     var story: String
     var memorySummary: String
+    var suggestedStep: String? = nil
 }
 
 struct ActivityTotal: Identifiable { let category: ActivityCategory; let minutes: Int; var id: String { category.rawValue } }
