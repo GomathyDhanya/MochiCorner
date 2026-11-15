@@ -153,6 +153,17 @@ final class ScreenShireTests: XCTestCase {
         XCTAssertEqual(ActivityRepository(directory: dir).pages["2026-01-01"]?.steps.map(\.title), ["Walk outside"])
     }
 
+    @MainActor func testReplacingChronicleKeepsOneChapterForTheDay() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = ActivityRepository(directory: directory)
+        let day = Date()
+        repository.addChronicle(.init(id: UUID(), date: day, title: "First", story: "First story", memorySummary: "First memory"))
+        repository.replaceChronicle(.init(id: UUID(), date: day, title: "Fresh", story: "Fresh story", memorySummary: "Fresh memory"))
+        XCTAssertEqual(repository.chronicles.count, 1)
+        XCTAssertEqual(repository.chronicle(for: day)?.title, "Fresh")
+    }
+
     @MainActor func testAutomaticChronicleClosesYesterdayOnce() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

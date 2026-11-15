@@ -75,11 +75,7 @@ final class AppState: ObservableObject {
         for (cat, id, name, minutes, offset) in examples { let end = cal.date(byAdding: .minute, value: -offset, to: now)!; let start = cal.date(byAdding: .minute, value: -minutes, to: end)!; repository.append(UsageSession(id: UUID(), bundleIdentifier: id, appName: name, category: cat, startedAt: start, endedAt: end)) }
     }
     func generateChronicle() async {
-        if repository.chronicle(for: .now) != nil {
-            storyStatus = "Today’s chapter is already on the bookshelf."
-            return
-        }
-        await generateChronicle(for: .now, automatically: false)
+        await generateChronicle(for: .now, automatically: false, replacingExisting: true)
     }
 
     func generateClosingChronicleIfNeeded(at now: Date) async {
@@ -92,8 +88,8 @@ final class AppState: ObservableObject {
         await generateChronicle(for: day, automatically: true)
     }
 
-    private func generateChronicle(for day: Date, automatically: Bool) async {
-        guard !isGeneratingStory, repository.chronicle(for: day) == nil else { return }
+    private func generateChronicle(for day: Date, automatically: Bool, replacingExisting: Bool = false) async {
+        guard !isGeneratingStory, replacingExisting || repository.chronicle(for: day) == nil else { return }
         guard !automatically || repository.hasDailyMemory(for: day) else { return }
         lastStoryError = nil
         storyStatus = nil
@@ -102,19 +98,23 @@ final class AppState: ObservableObject {
         let context = DailyStoryContextBuilder.make(sessions: repository.sessions, goals: repository.goals, chronicles: repository.chronicles, page: repository.pages[DaybookPage.key(day)], day: day)
         do {
             let chapter = try await GeminiStoryService().generate(context: context, enabled: aiEnabled, day: day)
-            repository.addChronicle(chapter)
-            if !automatically { storyStatus = "Mochi added a new chapter to the bookshelf." }
+            saveChronicle(chapter, replacingExisting: replacingExisting)
+            if !automatically { storyStatus = replacingExisting ? "Mochi refreshed today’s chapter." : "Mochi added a new chapter to the bookshelf." }
         } catch StoryError.serviceBusy {
-            repository.addChronicle(OfflineChronicle.make(context: context, day: day))
+            saveChronicle(OfflineChronicle.make(context: context, day: day), replacingExisting: replacingExisting)
             if !automatically { storyStatus = "Gemini is busy right now, so Mochi made an offline chapter instead." }
         } catch StoryError.malformedResponse {
-            repository.addChronicle(OfflineChronicle.make(context: context, day: day))
+            saveChronicle(OfflineChronicle.make(context: context, day: day), replacingExisting: replacingExisting)
             if !automatically { storyStatus = "Gemini’s response needed tidying, so Mochi made an offline chapter instead." }
         } catch StoryError.disabled where automatically {
             repository.addChronicle(OfflineChronicle.make(context: context, day: day))
         } catch StoryError.missingKey where automatically {
             repository.addChronicle(OfflineChronicle.make(context: context, day: day))
         } catch { lastStoryError = error.localizedDescription }
+    }
+    private func saveChronicle(_ chapter: DailyChronicle, replacingExisting: Bool) {
+        if replacingExisting { repository.replaceChronicle(chapter) }
+        else { repository.addChronicle(chapter) }
     }
     func dismissGoalAlert() { reachedGoal = nil }
     func assign(_ app: TrackedApp) {

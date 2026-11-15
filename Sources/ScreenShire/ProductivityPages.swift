@@ -290,7 +290,8 @@ struct ChronicleLibraryView: View {
             if !state.aiEnabled { state.aiEnabled = true }
             Task { await state.generateChronicle() }
         } label: {
-            if state.isGeneratingStory { ProgressView().controlSize(.small) } else { Label("Write today’s chapter", systemImage: "wand.and.stars") }
+            if state.isGeneratingStory { ProgressView().controlSize(.small) }
+            else { Label(state.repository.chronicle(for: .now) == nil ? "Write today’s chapter" : "Rewrite today’s chapter", systemImage: "wand.and.stars") }
         }
         .font(.callout.weight(.semibold))
         .foregroundStyle(.white)

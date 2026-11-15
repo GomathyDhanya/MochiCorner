@@ -59,6 +59,12 @@ final class ActivityRepository: ObservableObject {
         addSuggestedStep(from: value)
     }
 
+    func replaceChronicle(_ value: DailyChronicle) {
+        chronicles.removeAll { Calendar.current.isDate($0.date, inSameDayAs: value.date) }
+        chronicles.insert(value, at: 0)
+        saveState()
+    }
+
     func addSuggestedStep(from chapter: DailyChronicle) {
         guard let title = chapter.suggestedStep?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
               let date = Calendar.current.date(byAdding: .day, value: 1, to: chapter.date) else { return }
