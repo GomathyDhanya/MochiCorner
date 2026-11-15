@@ -9,23 +9,30 @@ struct ActivityCalendarView: View {
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 760
-            VStack(alignment: .leading, spacing: wide ? 18 : 10) {
-                gardenHeader(compact: !wide)
-                if wide {
-                    HStack(alignment: .top, spacing: 18) {
-                        calendarPanel(compact: false)
-                            .frame(maxWidth: .infinity)
-                        DayMemoryCard(day: selectedDay, compact: false)
+            ScrollView {
+                VStack(alignment: .leading, spacing: wide ? 18 : 14) {
+                    gardenHeader(compact: !wide)
+                    if wide {
+                        HStack(alignment: .top, spacing: 18) {
+                            calendarPanel(compact: false)
+                                .frame(maxWidth: .infinity)
+                            VStack(spacing: 14) {
+                                AnnualGardenView(pages: state.repository.pages, compact: true)
+                                DayMemoryCard(day: selectedDay, compact: false)
+                            }
                             .frame(width: min(330, geometry.size.width * 0.36))
+                        }
+                    } else {
+                        AnnualGardenView(pages: state.repository.pages, compact: true)
+                        calendarPanel(compact: true)
+                        DayMemoryCard(day: selectedDay, compact: true)
                     }
-                } else {
-                    calendarPanel(compact: true)
-                    DayMemoryCard(day: selectedDay, compact: true)
-                        .frame(maxHeight: 176)
                 }
+                .padding(wide ? 28 : 14)
+                .frame(maxWidth: 1160, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(wide ? 28 : 14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color.cream.opacity(0.14))
         }
         .navigationTitle("")
     }
@@ -185,6 +192,7 @@ private struct DayMemoryCard: View {
             return (name, Int(seconds / 60))
         }.filter { $0.1 > 0 }.sorted { $0.1 > $1.1 }
     }
+    @State private var showingSummary = false
     private var chapter: DailyChronicle? {
         state.repository.chronicles.first { Calendar.current.isDate($0.date, inSameDayAs: day) }
     }
@@ -198,6 +206,7 @@ private struct DayMemoryCard: View {
                         .font(.system(size: compact ? 23 : 29, weight: .medium, design: .serif))
                 }
                 Spacer()
+                Button { showingSummary = true } label: { Image(systemName: "book.pages") }.accessibilityLabel("Read full day summary")
                 Text(summary.minutes == 0 ? "Quiet day" : "\(summary.minutes)m")
                     .font(.caption.weight(.semibold)).padding(.horizontal, 9).padding(.vertical, 5)
                     .background(.white.opacity(0.55), in: Capsule())
@@ -223,6 +232,23 @@ private struct DayMemoryCard: View {
                 Label("Mochi’s note", systemImage: "book.closed.fill").font(.caption.weight(.bold))
                 Text(chapter.story).font(.caption).lineLimit(4)
             }
+        }
+        .sheet(isPresented: $showingSummary) {
+            let page = state.repository.pages[DaybookPage.key(day)] ?? DaybookPage()
+            VStack(alignment: .leading) {
+                HStack { Text(day.formatted(date: .complete, time: .omitted)).font(.headline); Spacer(); Button("Done") { showingSummary = false } }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("\(summary.minutes) screen minutes · \(page.petals) petals")
+                        ForEach(summary.totals) { Text("\($0.category.label) · \($0.minutes)m") }
+                        ForEach(page.steps) { Label($0.title, systemImage: $0.complete ? "checkmark.circle.fill" : "circle") }
+                        if page.tookBreak { Label("Screen-free break", systemImage: "leaf") }
+                        ForEach(Array([page.board.mood, page.board.tinyWin, page.board.currently].enumerated()), id: \.offset) { _, value in if !value.isEmpty { Text(value).italic() } }
+                        if !page.journal.isEmpty { Divider(); Text("Private journal").bold(); Text(page.journal) }
+                        if let chapter { Divider(); Text(chapter.title).bold(); Text(chapter.story) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }.padding().frame(minWidth: 320, minHeight: 350)
         }
         .padding(compact ? 14 : 20)
         .foregroundStyle(Color(red: 0.12, green: 0.22, blue: 0.20))

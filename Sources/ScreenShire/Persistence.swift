@@ -32,7 +32,11 @@ final class ActivityRepository: ObservableObject {
 
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ScreenShire")
-        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        if directory == nil {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: self.directory.path)
+        }
         load()
     }
     func append(_ session: UsageSession) { sessions.append(session); saveSessions() }
@@ -46,8 +50,54 @@ final class ActivityRepository: ObservableObject {
         }
         saveSessions(); saveState()
     }
-    func setGoals(_ values: [UsageGoal]) { goals = values; saveState() }
-    func addChronicle(_ value: DailyChronicle) { chronicles.insert(value, at: 0); saveState() }
+    func setGoals(_ values: [UsageGoal]) {
+        goals = values; saveState()
+    }
+    func addChronicle(_ value: DailyChronicle) {
+        chronicles.insert(value, at: 0)
+        saveState()
+        addSuggestedStep(from: value)
+    }
+
+    func addSuggestedStep(from chapter: DailyChronicle) {
+        guard let title = chapter.suggestedStep?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+              let date = Calendar.current.date(byAdding: .day, value: 1, to: chapter.date) else { return }
+        let key = DaybookPage.key(date)
+        var page = pages[key] ?? DaybookPage()
+        guard !page.steps.contains(where: { $0.id == chapter.id || $0.title == title }) else { return }
+        page.skippedSteps?.remove(chapter.id)
+        page.steps.append(.init(id: chapter.id, title: title))
+        _ = savePage(page, for: key)
+    }
+
+    func deleteChronicle(_ chapter: DailyChronicle) {
+        chronicles.removeAll { $0.id == chapter.id }
+        saveState()
+    }
+
+    func chronicle(for day: Date) -> DailyChronicle? {
+        chronicles.first { Calendar.current.isDate($0.date, inSameDayAs: day) }
+    }
+
+    func hasDailyMemory(for day: Date) -> Bool {
+        let page = pages[DaybookPage.key(day)]
+        let hasPageMemory = page.map {
+            !$0.journal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !$0.steps.isEmpty || $0.tookBreak || $0.boardPetals > 0
+        } ?? false
+        guard !hasPageMemory else { return true }
+        guard let interval = Calendar.current.dateInterval(of: .day, for: day) else { return false }
+        return sessions.contains { session in
+            let end = session.endedAt ?? Date()
+            return session.startedAt < interval.end && end > interval.start
+        }
+    }
+
+    @discardableResult func deleteNote(on key: String) -> Bool {
+        guard var page = pages[key] else { return true }
+        page.journal = ""
+        return savePage(page, for: key)
+    }
     func deleteAllHistory() {
         do {
             if FileManager.default.fileExists(atPath: pagesURL.path) { try FileManager.default.removeItem(at: pagesURL) }
@@ -73,7 +123,20 @@ final class ActivityRepository: ObservableObject {
         if repaired != sessions { sessions = repaired; saveSessions() }
         if let state = try? d.decode(State.self, from: Data(contentsOf: stateURL)) { appMappings = Dictionary(uniqueKeysWithValues: state.apps.map { ($0.id, $0) }); goals = state.goals; chronicles = state.chronicles }
     }
-    private func saveSessions() { write(sessions, to: sessionsURL) }
-    private func saveState() { write(State(apps: Array(appMappings.values), goals: goals, chronicles: chronicles), to: stateURL) }
+    private func saveSessions() {
+        write(sessions, to: sessionsURL)
+    }
+    private func saveState() {
+        write(State(apps: Array(appMappings.values), goals: goals, chronicles: chronicles), to: stateURL)
+    }
     private func write<T: Encodable>(_ value: T, to url: URL) { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; guard let d = try? e.encode(value) else { return }; try? d.write(to: url, options: .atomic) }
+    func carryOpenSteps(to today: String) {
+        var target = pages[today] ?? DaybookPage()
+        var seen = Set(target.steps.map(\.id)).union(target.skippedSteps ?? [])
+        for key in pages.keys.filter({ $0 < today }).sorted(by: >) {
+            seen.formUnion(pages[key]?.skippedSteps ?? [])
+            for step in pages[key]!.steps where seen.insert(step.id).inserted && !step.complete { target.steps.append(step) }
+        }
+        if !target.steps.isEmpty && target != pages[today] { _ = savePage(target, for: today) }
+    }
 }

@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     private lazy var monitor = AppActivityMonitor(tracker: tracker)
     init(repository: ActivityRepository = ActivityRepository()) {
         self.repository = repository
+
         let defaults = UserDefaults.standard
         trackingPaused = defaults.bool(forKey: "trackingPaused")
         widgetVisible = defaults.object(forKey: "widgetVisible") as? Bool ?? true
@@ -40,6 +41,7 @@ final class AppState: ObservableObject {
         repository.$goals.dropFirst().sink { [weak self] _ in self?.refreshFromData() }.store(in: &cancellables)
         repository.$appMappings.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         repository.$chronicles.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        repository.$pages.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         tracker.$current.dropFirst().sink { [weak self] _ in self?.refreshFromData() }.store(in: &cancellables)
         tracker.$isIdle.dropFirst().sink { [weak self] _ in self?.refreshFromData() }.store(in: &cancellables)
         tracker.$lastTransition.dropFirst().sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
@@ -52,10 +54,15 @@ final class AppState: ObservableObject {
         guard goalTimer == nil else { return }
         if !trackingPaused { monitor.start() }
         applyWidgetPreferences?()
+        updateDiary()
         evaluateGoals()
         goalTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.evaluateGoals() }
+            Task { @MainActor in self?.evaluateGoals(); self?.updateDiary() }
         }
+    }
+    private func updateDiary() {
+        repository.carryOpenSteps(to: DaybookPage.key(.now))
+        Task { await generateClosingChronicleIfNeeded(at: .now) }
     }
     func stop() {
         goalTimer?.invalidate()
@@ -68,22 +75,45 @@ final class AppState: ObservableObject {
         for (cat, id, name, minutes, offset) in examples { let end = cal.date(byAdding: .minute, value: -offset, to: now)!; let start = cal.date(byAdding: .minute, value: -minutes, to: end)!; repository.append(UsageSession(id: UUID(), bundleIdentifier: id, appName: name, category: cat, startedAt: start, endedAt: end)) }
     }
     func generateChronicle() async {
-        guard !isGeneratingStory else { return }
+        if repository.chronicle(for: .now) != nil {
+            storyStatus = "Today’s chapter is already on the bookshelf."
+            return
+        }
+        await generateChronicle(for: .now, automatically: false)
+    }
+
+    func generateClosingChronicleIfNeeded(at now: Date) async {
+        let calendar = Calendar.current
+        let hour = calendar.component(.hour, from: now)
+        let minute = calendar.component(.minute, from: now)
+        let day = hour == 23 && minute >= 55
+            ? calendar.startOfDay(for: now)
+            : calendar.date(byAdding: .day, value: -1, to: now)!
+        await generateChronicle(for: day, automatically: true)
+    }
+
+    private func generateChronicle(for day: Date, automatically: Bool) async {
+        guard !isGeneratingStory, repository.chronicle(for: day) == nil else { return }
+        guard !automatically || repository.hasDailyMemory(for: day) else { return }
         lastStoryError = nil
         storyStatus = nil
         isGeneratingStory = true
         defer { isGeneratingStory = false }
-        let context = DailyStoryContextBuilder.make(sessions: repository.sessions, goals: repository.goals, chronicles: repository.chronicles)
+        let context = DailyStoryContextBuilder.make(sessions: repository.sessions, goals: repository.goals, chronicles: repository.chronicles, page: repository.pages[DaybookPage.key(day)], day: day)
         do {
-            let chapter = try await GeminiStoryService().generate(context: context, enabled: aiEnabled)
+            let chapter = try await GeminiStoryService().generate(context: context, enabled: aiEnabled, day: day)
             repository.addChronicle(chapter)
-            storyStatus = "Mochi added a new chapter to the bookshelf."
+            if !automatically { storyStatus = "Mochi added a new chapter to the bookshelf." }
         } catch StoryError.serviceBusy {
-            repository.addChronicle(OfflineChronicle.make(context: context))
-            storyStatus = "Gemini is busy right now, so Mochi made an offline chapter instead."
+            repository.addChronicle(OfflineChronicle.make(context: context, day: day))
+            if !automatically { storyStatus = "Gemini is busy right now, so Mochi made an offline chapter instead." }
         } catch StoryError.malformedResponse {
-            repository.addChronicle(OfflineChronicle.make(context: context))
-            storyStatus = "Gemini’s response needed tidying, so Mochi made an offline chapter instead."
+            repository.addChronicle(OfflineChronicle.make(context: context, day: day))
+            if !automatically { storyStatus = "Gemini’s response needed tidying, so Mochi made an offline chapter instead." }
+        } catch StoryError.disabled where automatically {
+            repository.addChronicle(OfflineChronicle.make(context: context, day: day))
+        } catch StoryError.missingKey where automatically {
+            repository.addChronicle(OfflineChronicle.make(context: context, day: day))
         } catch { lastStoryError = error.localizedDescription }
     }
     func dismissGoalAlert() { reachedGoal = nil }
@@ -116,21 +146,79 @@ final class AppState: ObservableObject {
 struct ScreenShireApp: App {
     @StateObject private var state = AppState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     var body: some Scene {
-        WindowGroup("ScreenShire") { DashboardView().environmentObject(state).onAppear { state.start(); appDelegate.state = state } }
+        Window("MochiCorner", id: "workspace") {
+            DashboardView()
+                .environmentObject(state)
+                .onAppear {
+                    appDelegate.configure(state: state, openDashboard: { openWindow(id: "workspace") })
+                    state.start()
+                }
+        }
             .defaultSize(width: 1040, height: 720)
             .commands { CommandGroup(after: .appInfo) { Button("Show Cat Widget") { appDelegate.showWidget() }.keyboardShortcut("w", modifiers: [.command, .shift]) } }
     }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    weak var state: AppState? { didSet { if let state { widget = FloatingWidgetController(state: state) } } }
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private weak var state: AppState?
     private var widget: FloatingWidgetController?
+    private var statusItem: NSStatusItem?
+    private var openDashboardAction: (() -> Void)?
+
+    func configure(state: AppState, openDashboard: @escaping () -> Void) {
+        openDashboardAction = openDashboard
+        guard self.state == nil else { return }
+        self.state = state
+        widget = FloatingWidgetController(state: state)
+        installMenuBarControls()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
     }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { state?.stop() }
     func showWidget() { state?.widgetVisible = true; widget?.show() }
+    func openDashboard() {
+        openDashboardAction?()
+        DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
+    }
+
+    private func installMenuBarControls() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = NSImage(systemSymbolName: "pawprint.fill", accessibilityDescription: "MochiCorner")
+        item.button?.image?.isTemplate = true
+        item.button?.toolTip = "MochiCorner"
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        statusItem = item
+        refreshMenu(menu)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) { refreshMenu(menu) }
+
+    private func refreshMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        addMenuItem("Open dashboard", action: #selector(openDashboardFromMenu), to: menu)
+        addMenuItem(state?.trackingPaused == true ? "Start tracking" : "Stop tracking", action: #selector(toggleTracking), to: menu)
+        addMenuItem(state?.widgetVisible == true ? "Hide Mochi" : "Show Mochi", action: #selector(toggleWidget), to: menu)
+        menu.addItem(.separator())
+        addMenuItem("Quit MochiCorner", action: #selector(quit), to: menu)
+    }
+
+    private func addMenuItem(_ title: String, action: Selector, to menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+    }
+
+    @objc private func openDashboardFromMenu() { openDashboard() }
+    @objc private func toggleTracking() { state?.trackingPaused.toggle() }
+    @objc private func toggleWidget() { state?.widgetVisible.toggle() }
+    @objc private func quit() { NSApp.terminate(nil) }
 }

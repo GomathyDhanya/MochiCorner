@@ -3,11 +3,22 @@ import SwiftUI
 @testable import ScreenShire
 
 final class ScreenShireTests: XCTestCase {
+    @MainActor func testClosingDashboardKeepsBackgroundServiceRunning() {
+        XCTAssertFalse(AppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+    }
+
     func testGeminiStepValidation() {
         let service = GeminiStoryService()
         let good = #"{"title":"Garden","story":"Mochi paused.","memorySummary":"A break","suggestedStep":"Sketch on paper"}"#
         XCTAssertEqual(service.decodeChapter(good)?.suggestedStep, "Sketch on paper")
         XCTAssertNil(service.decodeChapter(good.replacingOccurrences(of: "Sketch on paper", with: " ")))
+    }
+
+    func testGeminiPlanningValidation() {
+        let service = GeminiPlanningService()
+        XCTAssertEqual(service.decodeSteps(#"{"steps":["Open the document","Write one heading"]}"#), ["Open the document", "Write one heading"])
+        XCTAssertNil(service.decodeSteps(#"{"steps":[]}"#))
+        XCTAssertNil(service.decodeSteps(#"{"steps":["One","Two","Three","Four"]}"#))
     }
 
     @MainActor func testUnreadableDaybookIsPreserved() throws {
@@ -32,12 +43,13 @@ final class ScreenShireTests: XCTestCase {
         page.board = DaybookPage.Board(
             mood: "Calm",
             tinyWin: "Made room for a walk",
-            currently: "Listening to rain",
-            keepsake: "Small is still progress"
+            currently: "Listening to rain"
         )
         XCTAssertTrue(store.savePage(page, for: DaybookPage.key(.now)))
         for width: CGFloat in [340, 780] {
-            let view = DaybookView(repository: store).frame(width: width, height: 600)
+            let view = DaybookView(repository: store)
+                .environmentObject(AppState(repository: store))
+                .frame(width: width, height: 600)
             let host = NSHostingView(rootView: view)
             host.frame = NSRect(x: 0, y: 0, width: width, height: 600)
             host.layoutSubtreeIfNeeded()
@@ -113,6 +125,66 @@ final class ScreenShireTests: XCTestCase {
         XCTAssertEqual(page.boardPetals, 2)
         XCTAssertEqual(page.petals, 4)
     }
+    @MainActor func testCarryAcrossMissedDaysAndCompletion() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repo = ActivityRepository(directory: directory)
+        var page = DaybookPage()
+        page.add("Read")
+        XCTAssertTrue(repo.savePage(page, for: "2026-11-11"))
+        repo.carryOpenSteps(to: "2026-11-14")
+        repo.carryOpenSteps(to: "2026-11-14")
+        var carried = try XCTUnwrap(repo.pages["2026-11-14"])
+        XCTAssertEqual(carried.steps, page.steps)
+        carried.steps[0].complete = true
+        XCTAssertTrue(repo.savePage(carried, for: "2026-11-14"))
+        repo.carryOpenSteps(to: "2026-11-15")
+        XCTAssertNil(repo.pages["2026-11-15"])
+    }
+
+    @MainActor func testChapterSchedulesOnceOnFollowingLocalDay() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ActivityRepository(directory: dir)
+        let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2025, month: 12, day: 31, hour: 22)))
+        let chapter = DailyChronicle(id: UUID(), date: date, title: "Winter", story: "Snow", memorySummary: "Walk", suggestedStep: " Walk outside ")
+        store.addChronicle(chapter)
+        store.addSuggestedStep(from: chapter)
+        XCTAssertEqual(ActivityRepository(directory: dir).pages["2026-01-01"]?.steps.map(\.title), ["Walk outside"])
+    }
+
+    @MainActor func testAutomaticChronicleClosesYesterdayOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = ActivityRepository(directory: directory)
+        let calendar = Calendar.current
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: .now))
+        XCTAssertTrue(repository.savePage(.init(board: .init(mood: "Hopeful")), for: DaybookPage.key(yesterday)))
+        let state = AppState(repository: repository)
+        state.aiEnabled = false
+        await state.generateClosingChronicleIfNeeded(at: .now)
+        let chapter = try XCTUnwrap(repository.chronicle(for: yesterday))
+        XCTAssertEqual(chapter.date.timeIntervalSince1970, yesterday.timeIntervalSince1970, accuracy: 1)
+        await state.generateClosingChronicleIfNeeded(at: .now)
+        XCTAssertEqual(repository.chronicles.count, 1)
+    }
+
+    @MainActor func testDiaryReaderShowsSavedEntryAtCompactSize() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = ActivityRepository(directory: dir)
+        XCTAssertTrue(repo.savePage(.init(journal: "The first snow fell during our walk."), for: "2026-11-14"))
+        let host = NSHostingView(rootView: DiaryReader(repository: repo).frame(width: 420, height: 400))
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        XCTAssertEqual(bitmap.size, host.bounds.size)
+        if let folder = ProcessInfo.processInfo.environment["SCREENSHIRE_PREVIEWS"] {
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: folder).appendingPathComponent("diary.png"))
+        }
+    }
+
     func testBuiltInClassifierRecognizesCode() {
         XCTAssertEqual(AppCategoryClassifier(customMappings: [:]).category(for: "com.apple.dt.Xcode"), .code)
     }

@@ -21,7 +21,7 @@ final class MeowPlayer {
     private var player: AVAudioPlayer?
     func playGoalReached() {
         // SwiftPM processes resources into the root of the resource bundle.
-        guard let url = Bundle.module.url(forResource: "cat-meow", withExtension: "mp3") else { return }
+        guard let url = Bundle.screenShireAssets.url(forResource: "cat-meow", withExtension: "mp3") else { return }
         player = try? AVAudioPlayer(contentsOf: url)
         player?.volume = 0.85
         player?.prepareToPlay()

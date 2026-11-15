@@ -3,6 +3,8 @@
 
 # Swift Package Manager build artifacts
 .build/
+__pycache__/
+*.pyc
 
 # Xcode user and build files
 DerivedData/

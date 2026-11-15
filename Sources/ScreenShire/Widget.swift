@@ -2,6 +2,14 @@ import AppKit
 import Combine
 import SwiftUI
 
+extension Bundle {
+    static let screenShireAssets: Bundle = {
+        if let url = Bundle.main.url(forResource: "ScreenShire_ScreenShire", withExtension: "bundle"),
+           let resources = Bundle(url: url) { return resources }
+        return .module
+    }()
+}
+
 @MainActor
 final class FloatingWidgetController: NSObject, NSWindowDelegate {
     private let panel: NSPanel
@@ -43,10 +51,21 @@ struct CatWidgetView: View {
     @State private var isPetting = false
     var body: some View {
         SpriteCat(category: state.currentCategory, frame: state.reducedMotion ? 0 : frame, isPetting: isPetting)
-            .padding(4).accessibilityElement(children: .combine).accessibilityLabel("ScreenShire cat widget. \(state.currentCategory.label)")
-            .contentShape(Rectangle()).onHover { hovering in withAnimation(.easeInOut(duration: 0.16)) { isPetting = hovering } }.onTapGesture { NSApp.activate(ignoringOtherApps: true) }
-            .contextMenu { Button(state.trackingPaused ? "Resume tracking" : "Pause tracking") { state.trackingPaused.toggle() }; Button("Open dashboard") { NSApp.activate(ignoringOtherApps: true) }; Divider(); Button("Hide widget") { state.widgetVisible = false } }
+            .padding(4).accessibilityElement(children: .combine).accessibilityLabel("MochiCorner cat widget. \(state.currentCategory.label)")
+            .contentShape(Rectangle()).onHover { hovering in withAnimation(.easeInOut(duration: 0.16)) { isPetting = hovering } }.onTapGesture { (NSApp.delegate as? AppDelegate)?.openDashboard() }
+            .contextMenu { Button(state.trackingPaused ? "Resume tracking" : "Pause tracking") { state.trackingPaused.toggle() }; Button("Open dashboard") { (NSApp.delegate as? AppDelegate)?.openDashboard() }; Divider(); Button("Hide widget") { state.widgetVisible = false } }
             .task(id: state.animationInterval) { while !Task.isCancelled { try? await Task.sleep(for: .seconds(state.animationInterval)); if !state.reducedMotion { frame = (frame + 1) % 3 } } }
+    }
+}
+
+struct ScreenShireLogoMark: View {
+    var size: CGFloat = 28
+    var body: some View {
+        if let url = Bundle.screenShireAssets.url(forResource: "AppIcon", withExtension: "png"), let image = NSImage(contentsOf: url) {
+            Image(nsImage: image).resizable().scaledToFit().frame(width: size, height: size)
+        } else {
+            Image(systemName: "pawprint.fill").frame(width: size, height: size)
+        }
     }
 }
 
@@ -78,7 +97,7 @@ enum CatSpriteLibrary {
     }
     private static func load(named filename: String) -> NSImage? {
         // SwiftPM flattens processed resources into the target resource bundle.
-        guard let url = Bundle.module.url(forResource: filename, withExtension: "png") else { return nil }
+        guard let url = Bundle.screenShireAssets.url(forResource: filename, withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
     }
 }

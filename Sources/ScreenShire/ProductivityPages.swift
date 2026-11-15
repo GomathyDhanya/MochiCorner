@@ -279,22 +279,34 @@ struct ChronicleLibraryView: View {
 
     private var chronicleMessage: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(state.aiEnabled ? "Turn today into a chapter" : "Gemini is resting").font(.title3.weight(.medium))
-            Text(state.aiEnabled ? "Only aggregate activity totals are included." : "Enable reflections in Comfort Settings.")
+            Text(state.aiEnabled ? "Turn today into a chapter" : "Let Mochi write today’s chapter").font(.title3.weight(.medium))
+            Text("Includes activity, completed steps and your mood board.")
                 .font(.caption).foregroundStyle(.white.opacity(0.7))
         }
     }
 
     private var generateButton: some View {
-        Button { Task { await state.generateChronicle() } } label: {
+        Button {
+            if !state.aiEnabled { state.aiEnabled = true }
+            Task { await state.generateChronicle() }
+        } label: {
             if state.isGeneratingStory { ProgressView().controlSize(.small) } else { Label("Write today’s chapter", systemImage: "wand.and.stars") }
-        }.buttonStyle(.borderedProminent).tint(.white.opacity(0.18)).disabled(!state.aiEnabled || state.isGeneratingStory)
+        }
+        .font(.callout.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 15)
+        .padding(.vertical, 10)
+        .background(.white.opacity(0.16), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.24)))
+        .buttonStyle(.plain)
+        .disabled(state.isGeneratingStory)
     }
 }
 
 private struct ChronicleCard: View {
     @EnvironmentObject private var state: AppState
     let chapter: DailyChronicle
+    @State private var deleting = false
     private var totals: [ActivityTotal] { ActivityAnalyticsService.totals(state.repository.sessions, for: chapter.date).filter { $0.minutes > 0 } }
 
     var body: some View {
@@ -302,13 +314,18 @@ private struct ChronicleCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text(chapter.date.formatted(.dateTime.month(.abbreviated).day())).font(.caption.weight(.bold)).foregroundStyle(.secondary)
-                    Spacer(); Image(systemName: "bookmark.fill").foregroundStyle(Color.sage)
+                    Spacer()
+                    Button { deleting = true } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+                        .accessibilityLabel("Delete chronicle")
+                        .confirmationDialog("Delete this chronicle?", isPresented: $deleting) {
+                            Button("Delete chronicle", role: .destructive) { state.repository.deleteChronicle(chapter) }
+                        }
                 }
                 Text(chapter.title).font(.system(size: 23, weight: .medium, design: .serif))
                 Text(chapter.story).font(.callout).fixedSize(horizontal: false, vertical: true)
-                if let suggestion = chapter.suggestedStep {
+                if chapter.suggestedStep != nil {
                     Divider(); Text("A small experiment").font(.caption.weight(.bold)).foregroundStyle(.secondary)
-                    TomorrowStepView(repository: state.repository, suggestion: suggestion)
+                    TomorrowStepView(repository: state.repository, chapter: chapter)
                 }
                 if !totals.isEmpty {
                     HStack { ForEach(totals.prefix(3)) { total in Label("\(total.minutes)m", systemImage: total.category.icon).font(.caption2).padding(5).background(.white.opacity(0.6), in: Capsule()) } }
@@ -351,14 +368,14 @@ struct ComfortStudioView: View {
     private var geminiSettings: some View {
         StudioSurface(tint: Color.lilac.opacity(0.15)) {
             VStack(alignment: .leading, spacing: 15) {
-                SettingsHeading(icon: "sparkles", title: "Gemini reflections", detail: "Optional daily chapters")
-                Divider(); Toggle("Enable daily reflections", isOn: $state.aiEnabled)
+                SettingsHeading(icon: "sparkles", title: "Gemini help", detail: "Optional reflections and gentle planning")
+                Divider(); Toggle("Enable Gemini features", isOn: $state.aiEnabled)
                 SecureField("Gemini API key", text: $key).textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Save to Keychain") { saveKey() }.buttonStyle(.borderedProminent).tint(.lilac).disabled(key.isEmpty)
                     if saved { Label("Saved", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green) }
                 }
-                Text("ScreenShire sends category totals, goal status, and short fictional memory notes when you request a chapter.")
+                Text("MochiCorner sends category totals, goal status, mood-board cards, completed steps and story memories when you request a chapter.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -367,12 +384,12 @@ struct ComfortStudioView: View {
     private var privacySettings: some View {
         StudioSurface(tint: Color.sage.opacity(0.12)) {
             VStack(alignment: .leading, spacing: 14) {
-                SettingsHeading(icon: "lock.shield", title: "Your data", detail: "Stored locally on this Mac")
+                SettingsHeading(icon: "lock.shield", title: "Your data", detail: "Saved privately in your macOS account")
                 Divider()
                 Label("Foreground app names and time", systemImage: "checkmark.circle")
                 Label("No screen contents or keystrokes", systemImage: "eye.slash")
-                Button("Delete all local history", role: .destructive) { confirmDeletion = true }
-                    .confirmationDialog("Delete activity, chapters, and all daybook pages?", isPresented: $confirmDeletion) {
+                Button("Delete local history", role: .destructive) { confirmDeletion = true }
+                    .confirmationDialog("Delete activity, chapters, and daybook pages for this user on this Mac?", isPresented: $confirmDeletion) {
                         Button("Delete history", role: .destructive) { state.repository.deleteAllHistory() }
                     }
             }
@@ -393,8 +410,4 @@ private struct SettingsHeading: View {
 
 private struct ProductiveCategoryOptions: View {
     var body: some View { ForEach(ActivityCategory.allCases.filter { $0 != .idle && $0 != .uncategorized }) { Text($0.label).tag($0) } }
-}
-
-private struct AllCategoryOptions: View {
-    var body: some View { ForEach(ActivityCategory.allCases.filter { $0 != .idle }) { Text($0.label).tag($0) } }
 }
